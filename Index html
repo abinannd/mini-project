@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EVA Alert - Participant</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 24px; background: #0f172a; color: #e2e8f0; }
+  h1 { font-size: 1.25rem; margin-bottom: 4px; }
+  p.sub { color: #94a3b8; margin-top: 0; }
+  button { width: 100%; padding: 16px; font-size: 1rem; border: none; border-radius: 10px;
+           background: #2563eb; color: white; margin-top: 16px; }
+  button:disabled { background: #475569; }
+  #status { margin-top: 16px; padding: 12px; border-radius: 8px; background: #1e293b; font-size: 0.9rem; }
+  #alertBanner { display: none; margin-top: 16px; padding: 20px; border-radius: 10px;
+                 background: #b91c1c; font-weight: 600; text-align: center; }
+</style>
+</head>
+<body>
+
+<h1>Emergency Vehicle Alert</h1>
+<p class="sub">Share your location to be warned if an ambulance is approaching on your path.</p>
+
+<button id="startBtn">Start Sharing Location</button>
+<div id="status">Not connected.</div>
+<div id="alertBanner"></div>
+
+<script>
+  // ---------- CONFIG: edit this ----------
+  const WS_HOST = "192.168.1.100";  // backend LAN IP
+  const WS_PORT = 8000;
+  const WATCH_INTERVAL_MS = 2000;
+  // ----------------------------------------
+
+  const vehicleId = "veh_" + Math.random().toString(36).slice(2, 8);
+  const statusEl = document.getElementById("status");
+  const alertEl = document.getElementById("alertBanner");
+  const startBtn = document.getElementById("startBtn");
+
+  let ws = null;
+  let watchId = null;
+
+  function connect() {
+    ws = new WebSocket(`ws://${WS_HOST}:${WS_PORT}/ws/vehicle/${vehicleId}`);
+
+    ws.onopen = () => {
+      statusEl.textContent = `Connected as ${vehicleId}. Waiting for GPS...`;
+    };
+
+    ws.onmessage = (evt) => {
+      const data = JSON.parse(evt.data);
+      if (data.type === "alert") {
+        alertEl.style.display = "block";
+        alertEl.textContent = `${data.message} (${data.distance_m} m away)`;
+        setTimeout(() => { alertEl.style.display = "none"; }, 8000);
+      }
+    };
+
+    ws.onclose = () => {
+      statusEl.textContent = "Disconnected. Retrying in 3s...";
+      setTimeout(connect, 3000);
+    };
+  }
+
+  function sendPosition(position) {
+    const { latitude, longitude } = position.coords;
+    statusEl.textContent = `Sharing location: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ lat: latitude, lng: longitude }));
+    }
+  }
+
+  startBtn.addEventListener("click", () => {
+    if (!navigator.geolocation) {
+      statusEl.textContent = "Geolocation not supported on this browser.";
+      return;
+    }
+    connect();
+    watchId = navigator.geolocation.watchPosition(
+      sendPosition,
+      (err) => { statusEl.textContent = "Location error: " + err.message; },
+      { enableHighAccuracy: true, maximumAge: WATCH_INTERVAL_MS, timeout: 10000 }
+    );
+    startBtn.disabled = true;
+    startBtn.textContent = "Sharing Active";
+  });
+</script>
+
+</body>
+</html>
