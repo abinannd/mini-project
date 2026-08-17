@@ -23,9 +23,18 @@ from typing import Dict, List, Optional, Tuple
 
 import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, ValidationError
 
 app = FastAPI(title="Lane-Aware EVA System")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # restrict to your frontend's origin in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ---------------- Configuration ----------------
 WARNING_DISTANCE_M = 500      # alert vehicles within this distance ahead
@@ -40,6 +49,19 @@ class RouteRequest(BaseModel):
     start_lng: float
     end_lat: float
     end_lng: float
+
+
+class VehiclePing(BaseModel):
+    lat: float
+    lng: float
+
+
+class AmbulancePing(BaseModel):
+    lat: float
+    lng: float
+    speed_kmh: float = 0.0
+    heading_deg: float = 0.0
+    emergency: bool = False
 
 
 class AmbulanceState:
@@ -133,6 +155,8 @@ async def evaluate_and_alert():
 
     for vid, v in list(connected_vehicles.items()):
         vlat, vlng = v["lat"], v["lng"]
+        if vlat is None or vlng is None:
+            continue
 
         dist = haversine_m(ambulance_state.lat, ambulance_state.lng, vlat, vlng)
         if dist > WARNING_DISTANCE_M:
@@ -181,15 +205,23 @@ async def ws_ambulance(websocket: WebSocket):
     ambulance_ws = websocket
     try:
         while True:
-            data = await websocket.receive_json()
-            ambulance_state.lat = data.get("lat")
-            ambulance_state.lng = data.get("lng")
-            ambulance_state.speed_kmh = data.get("speed_kmh", 0.0)
-            ambulance_state.heading_deg = data.get("heading_deg", 0.0)
-            ambulance_state.emergency = data.get("emergency", False)
+            raw = await websocket.receive_json()
+            try:
+                data = AmbulancePing(**raw)
+            except ValidationError as exc:
+                print(f"[ws_ambulance] invalid payload, skipping: {exc}")
+                continue
+            ambulance_state.lat = data.lat
+            ambulance_state.lng = data.lng
+            ambulance_state.speed_kmh = data.speed_kmh
+            ambulance_state.heading_deg = data.heading_deg
+            ambulance_state.emergency = data.emergency
             ambulance_state.last_update = time.time()
             await evaluate_and_alert()
     except WebSocketDisconnect:
+        pass
+    finally:
+        global ambulance_ws
         ambulance_ws = None
 
 
@@ -199,9 +231,16 @@ async def ws_vehicle(websocket: WebSocket, vehicle_id: str):
     connected_vehicles[vehicle_id] = {"lat": None, "lng": None, "ws": websocket}
     try:
         while True:
-            data = await websocket.receive_json()
-            connected_vehicles[vehicle_id]["lat"] = data.get("lat")
-            connected_vehicles[vehicle_id]["lng"] = data.get("lng")
+            raw = await websocket.receive_json()
+            try:
+                data = VehiclePing(**raw)
+            except ValidationError as exc:
+                print(f"[ws_vehicle:{vehicle_id}] invalid payload, skipping: {exc}")
+                continue
+            connected_vehicles[vehicle_id]["lat"] = data.lat
+            connected_vehicles[vehicle_id]["lng"] = data.lng
     except WebSocketDisconnect:
+        pass
+    finally:
         connected_vehicles.pop(vehicle_id, None)
   
